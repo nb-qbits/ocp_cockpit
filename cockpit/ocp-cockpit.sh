@@ -1,10 +1,11 @@
 #!/bin/bash
 # ============================================================================
-# OpenShift Command Cockpit
+# OpenShift Mixed-Architecture Command Cockpit
 # ============================================================================
 # Source this file:  source ocp-cockpit.sh
 # Then run any function by name, e.g.:  ocp-health
 #
+# Built during: Mixed Arch (x86_64 + aarch64) OpenShift on AWS setup
 # Last updated: 2026-02-13
 # ============================================================================
 
@@ -80,7 +81,7 @@ ocp-version-detail() {
 # SECTION 2: NODE & MACHINE MANAGEMENT
 # ============================================================================
 
-# Show nodes with architecture labels
+# Show nodes with architecture labels - essential for multi-arch
 ocp-nodes-arch() {
     echo -e "${BOLD}${CYAN}=== Nodes by Architecture ===${NC}"
     oc get nodes --label-columns='kubernetes.io/arch' -o wide
@@ -134,6 +135,53 @@ ocp-pods-by-arch() {
         count=$(oc get pods --all-namespaces --field-selector spec.nodeName=$node --no-headers 2>/dev/null | wc -l)
         echo -e "  ${BOLD}$node${NC} (${CYAN}$arch${NC}): $count pods"
     done
+}
+
+# List all supported architectures in the cluster
+ocp-ami-architectures() {
+    echo -e "${BOLD}${CYAN}=== Supported Architectures ===${NC}"
+    oc get configmap/coreos-bootimages -n openshift-machine-config-operator \
+        -o jsonpath='{.data.stream}' | jq '.architectures | keys'
+}
+
+# Show AMIs for your region across all architectures
+ocp-ami-region() {
+    local region=${1:-"us-east-2"}
+    echo -e "${BOLD}${CYAN}=== RHCOS AMIs for region: $region ===${NC}"
+    oc get configmap/coreos-bootimages -n openshift-machine-config-operator \
+        -o jsonpath='{.data.stream}' | jq --arg r "$region" '
+        .architectures | to_entries[] |
+        select(.value.images.aws.regions[$r] != null) |
+        {architecture: .key, region: $r, ami: .value.images.aws.regions[$r].image}
+    '
+}
+
+# Show all AWS regions available for a specific architecture
+ocp-ami-all-regions() {
+    local arch=${1:-"aarch64"}
+    echo -e "${BOLD}${CYAN}=== All AWS regions for architecture: $arch ===${NC}"
+    oc get configmap/coreos-bootimages -n openshift-machine-config-operator \
+        -o jsonpath='{.data.stream}' | jq --arg a "$arch" '
+        .architectures[$a].images.aws.regions | to_entries[] |
+        {region: .key, ami: .value.image}
+    '
+}
+
+# Quick AMI lookup: get the AMI for a specific arch + region
+ocp-ami-lookup() {
+    local arch=${1:?"Usage: ocp-ami-lookup <arch> [region]  (arch: x86_64, aarch64, ppc64le, s390x)"}
+    local region=${2:-"us-east-2"}
+    echo -e "${BOLD}${CYAN}=== AMI Lookup ===${NC}"
+    local ami=$(oc get configmap/coreos-bootimages -n openshift-machine-config-operator \
+        -o jsonpath='{.data.stream}' | jq -r --arg a "$arch" --arg r "$region" \
+        '.architectures[$a].images.aws.regions[$r].image')
+    if [ "$ami" = "null" ] || [ -z "$ami" ]; then
+        echo -e "${RED}No AMI found for arch=$arch region=$region${NC}"
+    else
+        echo -e "  Architecture: ${CYAN}$arch${NC}"
+        echo -e "  Region:       ${CYAN}$region${NC}"
+        echo -e "  AMI:          ${GREEN}$ami${NC}"
+    fi
 }
 
 # Check Multiarch Tuning Operator status
@@ -238,6 +286,10 @@ ocp-help() {
     echo -e "  ${GREEN}ocp-multiarch-check${NC}     Is cluster using multi-arch payload?"
     echo -e "  ${GREEN}ocp-pods-by-arch${NC}        Pod count per node architecture"
     echo -e "  ${GREEN}ocp-multiarch-operator${NC}  Multiarch Tuning Operator status"
+    echo -e "  ${GREEN}ocp-ami-architectures${NC}   List all supported CPU architectures"
+    echo -e "  ${GREEN}ocp-ami-region [region]${NC} AMIs for a region (default: us-east-2)"
+    echo -e "  ${GREEN}ocp-ami-all-regions [arch]${NC} All AWS regions for an architecture"
+    echo -e "  ${GREEN}ocp-ami-lookup <arch> [region]${NC} Quick AMI lookup"
     echo ""
     echo -e "${BOLD}TROUBLESHOOTING:${NC}"
     echo -e "  ${GREEN}ocp-pods-sick${NC}           Show all non-running pods"
